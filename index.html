@@ -1,0 +1,2042 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Miniflux Reader</title>
+    <!--
+        TODO
+        * Export/Import OPML
+      -->
+    <style>
+      :root {
+          --background: white; --foreground: black;
+          --ui-background: #eee;
+          --highlight-background: Highlight; --highlight-foreground: HighlightText;
+          --dialog-background: -moz-Dialog; --dialog-foreground: -moz-DialogText;
+          --key-background: #eee; --key-foreground: black; --key-border: #aaa; --key-shadow: #aaa;
+          --menu-background: Menu; --menu-foreground: MenuText;
+          --table-border: #ccc; --th-background: #f8f8f8;
+          --link-color: -moz-hyperlinktext; --visited-link-color: -moz-visitedhyperlinktext;
+      }
+      :root[data-theme="black"] {
+          --background: #282828; --foreground: #888;
+          --ui-background: #555753;
+          --highlight-background: #3465a4; --highlight-foreground: #ccc;
+          --dialog-background: #282828; --dialog-foreground: #888;
+          --key-background: #555753; --key-foreground: #ccc; --key-border: #777; --key-shadow: #777;
+          --menu-background: #555753; --menu-foreground: #888;
+          --table-border: #555753; --th-background: #383838;
+          scrollbar-color: #555753 var(--background);
+          scrollbar-width: thin;
+          --link-color: #729fcf; --visited-link-color: #ad7fa8;
+      }
+
+      /* Overall topbar/sidebar/content area split */
+      html, body { width: 100vw; height: 100vh; margin: 0 }
+      body {
+          display: flex; flex-direction: column;
+          background: var(--background); color: var(--foreground);
+      }
+      #topbar {
+          z-index: 1; order: 0; flex: initial; display: flex;
+          background-color: var(--ui-background)
+      }
+      #bottom-area { order: 1; flex: auto; display: flex; flex-direction: row }
+      #sidebar { order: 0; flex: 0 0 25%; }
+      #entries { order: 1; flex: auto; }
+      html, body, #bottom-area { overflow: hidden }
+      #sidebar, #entries { overflow: auto }
+
+      /* Topbar */
+      #topbar { padding: 0.5em; box-shadow: 0px 1px 1px 1px rgba(0,0,0, 0.25) }
+      .radio:first-child label { border-top-left-radius: 2px; border-bottom-left-radius: 2px }
+      .radio:last-child label { border-top-right-radius: 2px; border-bottom-right-radius: 2px }
+      .radio label { padding-left: 0.5em; padding-right: 0.5em; cursor: pointer; font-size: smaller }
+      .radio [type=radio] { position: fixed; opacity: 0 }
+      .radio :not(:checked) + label {
+          background: var(--background); color: var(--foreground);
+          box-shadow: 1px 1px 1px 1px inset rgba(0,0,0, 0.25) }
+      .radio :checked + label {
+          background: var(--highlight-background); color: var(--highlight-foreground);
+          box-shadow: 0px 0px 1px 1px inset rgba(0,0,0, 0.25); }
+      #username { margin-left: auto; font-size: smaller; border: none }
+
+      /* Scroll containers where offsetTop is important */
+      .scroller { position: relative }
+
+      /* Category/feed tree */
+      #categories { padding-left: 1em; list-style: none; font-size: smaller }
+      .category summary { cursor: pointer }
+      .feeds { padding-left: 1em; list-style: none }
+      .feed .icon, .entry .icon { width: 16px; height: 16px; padding-right: 0.5em }
+
+      .category details summary::before { width: 1em; content: '▸' }
+      .category details[open] summary::before { width: 1em; content: '▾' }
+      .category summary,
+      #categories .feed { display: flex; flex-direction: row }
+      .category summary .title,
+      #categories .feed a { flex: auto; overflow: hidden; text-overflow: ellipsis }
+      .category summary .unread,
+      #categories .feed .unread { flex: none }
+      .category summary .unread:not(:empty),
+      #categories .feed .unread:not(:empty) {
+          margin: 0 0.5em; padding: 0 0.5em;
+          background: var(--highlight-background); color: var(--highlight-foreground);
+          border-radius: 0.75em;
+      }
+
+      #categories .feed a { display: block; white-space: nowrap }
+      #categories .feed a:not([href]) { font-weight: bold; }
+      #categories .feed a:focus, .category summary:focus,
+      .menu-target.feed a, .menu-target.category summary {
+          background: var(--highlight-background); color: var(--highlight-foreground)
+      }
+
+      /* Entries */
+      #entries {
+          padding: 0 0.5in 0 1in; box-shadow: -1px 0 1px 0px rgba(0,0,0, 0.125); outline: none;
+      }
+      .empty#entries::after {
+          display: block; margin-top: 0.75in;
+          content: 'Nothing to see here. Move along.'; opacity: 0.25; font-style: italic
+      }
+      .entry:first-child { margin-top: 0.75in;}
+      .entry:last-child { margin-bottom: 61.8vh }
+      .entry .content { padding-bottom: 1in }
+      .unread.entry { opacity: 1 }
+      .read.entry { opacity: 0.75 }
+      .removed.entry { opacity: 0.5 }
+      .entry header {
+          background: var(--background); color: var(--foreground);
+      }
+      .entry header, #help header {
+          position: sticky; top: 0;
+          margin-bottom: 0.25in;
+      }
+      .entry header::after, #help header::after {
+          display: block; position: absolute; top: 100%; bottom: -0.25in; left: 0; right: 0;
+          background: linear-gradient(var(--background), transparent);
+          content: ''
+      }
+      .entry header h1, .entry header h2 { font-size: 1em }
+      .entry .title { font-size: 1.5em; font-weight: normal }
+      .entry .published_at { font-size: 1em; font-weight: normal }
+      .entry .feed { }
+
+      /* Modal overlay */
+      .hidden#overlay { display: none }
+      #overlay {
+          position: absolute; left: 0; right: 0; top: 0; bottom: 0; z-index: 100;
+          background: rgba(0,0,0, 0.5);
+      }
+
+      /* Dialogs */
+      .hidden.dialog { display: none }
+      .dialog {
+          --background: var(--dialog-background); --foreground: var(--dialog-foreground);
+          padding: 0 0.5in 0 1in;
+          width: 80%; max-width: 8in; margin: auto;
+          box-sizing: border-box; top: 0; bottom: 0; height: 100%; overflow: auto;
+          box-shadow: 0 0 0.25in rgba(0,0,0, 0.5);
+          background: var(--dialog-background); color: var(--dialog-foreground);
+      }
+      .dialog { padding-top: 0.75in }
+      .dialog label,
+      .dialog .button,
+      .dialog details { display: block; margin-top: 1em }
+      .dialog summary label { display: inline }
+      .dialog input:not([type=checkbox]):not([type=radio]),
+      .dialog textarea,
+      .dialog select { width: 100% }
+      .dialog .button { text-align: right }
+      .dialog .hbox { display: flex; flex-direction: row }
+      .dialog .hbox input { flex: auto }
+      .dialog .hbox button { flex: none }
+
+      /* Help */
+      #help { padding-top: 0 }
+      #help dd + dt { margin-top: 0.75em }
+      #help kbd {
+          border: 1px solid var(--key-border); border-radius: 0.25em;
+          box-shadow: 1px 1px 3px var(--key-shadow);
+          background: var(--key-background); color: var(--key-foreground);
+          padding: 0 0.25em;
+      }
+
+      /* Feed properties form */
+
+      /* Feed discovery form */
+
+      /* Links */
+      a:link { color: var(--link-color) }
+      a:visited { color: var(--visited-link-color) }
+      a:link, a:visited { text-decoration: none }
+
+      /* Menus */
+      menu {
+          position: absolute; z-index: 100; padding: 0; margin: 0; display: inline-block;
+          background: var(--menu-background); color: var(--menu-foreground);
+          list-style-type: none; font-size: smaller;
+          box-shadow: 2px 2px 5px 3px rgba(0,0,0, 0.25);
+      }
+      menu.hidden { display: none; }
+      menu button {
+          display: block; width: 100%; padding: 0.25em 1.5em;
+          background: var(--menu-background); color: var(--menu-foreground);
+          border: none;
+          text-align: left; cursor: default;
+      }
+      menu button:focus {
+          background: var(--highlight-background); color: var(--highlight-foreground);
+          outline: none
+      }
+      menu button::-moz-focus-inner { border: 0 }
+
+      /* Content */
+      .entry .content img { max-width: 100% }
+      .entry .content table { border-collapse: collapse }
+      .entry .content th,
+      .entry .content td { border: 1px solid var(--table-border); padding: 0 0.25em }
+      .entry .content th { background: var(--th-background); text-align: left }
+    </style>
+
+    <template id="category">
+      <li class="category" data-id="">
+        <details>
+          <summary>
+            <span class="title"></span>
+            <span class="unread"></span>
+          </summary>
+          <ul class="feeds">
+          </ul>
+        </details>
+      </li>
+    </template>
+
+    <template id="feed">
+      <li class="feed"><a draggable="true"><img class="icon" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E"><span class="title"></span></a><span class="unread"></span>
+      </li>
+    </template>
+
+    <template id="entry">
+      <article class="entry">
+        <header>
+          <h1><a class="title" target="_blank" rel="noopener noreferrer"></a></h1>
+          <h2><img class="icon" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E"><time class="published_at"></time> <a class="feed"></a></h2>
+        </header>
+        <div class="content">
+        </div>
+      </article>
+    </template>
+
+    <template id="discovered-feed">
+      <option><span class="title"></span> (<span class="type"></span>)</option>
+    </template>
+
+  </head>
+  <body>
+    <div id="bottom-area">
+      <main id="entries" class="scroller" tabindex="-1">
+      </main>
+      <nav id="sidebar" class="scroller">
+        <ul id="categories">
+          <li class="all-feeds feed" data-id="">
+            <a href="#/unread/">All feeds</a>
+            <span class="unread"></span>
+          </li>
+        </ul>
+      </nav>
+    </div>
+    <nav id="topbar">
+      <span id="filter" class="radio-group">
+        <span id="all" class="radio">
+          <input type="radio" name="filter" id="filter-all">
+          <label for="filter-all">All</label></span><span id="unread" class="radio"><input type="radio" name="filter" id="filter-unread" checked><label for="filter-unread">Unread</label>
+        </span>
+      </span>
+      <button type="button" id="username" onclick="logOut();"></span>
+    </nav>
+
+    <div id="menus">
+      <!-- These must be ordered most specific first.
+           The contextmenu event handler will go through them in order
+           and check whether the target node has an ancestor
+           specified by data-for -->
+      <menu id="feedMenu" class="hidden" data-for="feed">
+        <li><button onclick="markFeedRead();">Mark read</button></li>
+        <li><button onclick="editFeed();">Edit…</button></li>
+        <li><button onclick="refreshFeed();">Refresh</button></li>
+        <li><button onclick="unsubscribeFeed();">Unsubscribe</button></li>
+      </menu>
+      <menu id="categoryMenu" class="hidden" data-for="category">
+        <li><button onclick="openDiscoveryForm();">Add feed…</button></li>
+        <li><button onclick="markCategoryRead();">Mark read</button></li>
+        <li><button onclick="renameCategory();">Rename…</button></li>
+        <li><button onclick="deleteCategory();">Delete</button></li>
+      </menu>
+      <menu id="allMenu" class="hidden" data-for="all-feeds">
+        <li><button onclick="createCategory();">Create category…</button></li>
+        <li><button onclick="markAllRead();">Mark all read</button></li>
+        <li><button onclick="exportOpml();">Export OPML</button></li>
+        <li><button onclick="importOpml();">Import OPML…</button></li>
+      </menu>
+    </div>
+
+    <div id="overlay" class="hidden">
+      <article id="help" class="hidden dialog" tabindex="-1">
+        <section class="entry">
+          <header><h1 class="title">Entries list shortcuts</h1></header>
+          <dl class="content">
+            <dt><kbd>n</kbd>, <kbd>Space</kbd>, <kbd>⇟ PageDown</kbd></dt>
+            <dd>Scroll to the next entry or one page down</dd>
+            <dt><kbd>p</kbd>, <kbd>Shift</kbd>+<kbd>Space</kbd>, <kbd>⇞ PageUp</kbd></dt>
+            <dd>Scroll to the previous entry or one page up</dd>
+            <dt><kbd>m</kbd>, <kbd>M</kbd>, <kbd>x</kbd></dt>
+            <dd>Mark the current entry read, unread, or removed</dd>
+            <dt><kbd>o</kbd></dt>
+            <dd>Open the original URL of the current entry</dd>
+          </dl>
+        </section>
+        <section class="entry">
+          <header><h1 class="title">Category/Feed tree shortcuts</h1></header>
+          <dl class="content">
+            <dt><kbd>←</kbd> <kbd>↓</kbd> <kbd>↑</kbd> <kbd>→</kbd>
+              <kbd>⇞ PageUp</kbd> <kbd>⇟ PageDown</kbd> <kbd>⇱ Home</kbd> <kbd>⇲ End</kbd></dt>
+            <dd>Navigate, expand or collapse the tree as you would expect.</dd>
+            <dt><kbd>n</kbd>, <kbd>p</kbd></dt>
+            <dd>Same as <kbd>↓</kbd> and <kbd>↑</kbd>.</dd>
+            <dt><kbd>Enter</kbd>, <kbd>Space</kbd></dt>
+            <dd>Expand or collapse the currently focused category,
+              or display the focused feed.</dd>
+            <dt><kbd>▤ Menu</kbd> <small>(secondary mouse button works too!)</small></dt>
+            <dd>Open context menu</dd>
+            <dt><kbd>Escape</kbd></dt>
+            <dd>Focus the entries list</dd>
+          </dl>
+        </section>
+        <section class="entry">
+          <header><h1 class="title">Global shortcuts</h1></header>
+          <dl class="content">
+            <dt><kbd>i</kbd></dt>
+            <dd>Focus the feeds tree</dd>
+            <dt><kbd>I</kbd></dt>
+            <dd>Focus the entries list</dd>
+            <dt><kbd>A</kbd>, <kbd>U</kbd></dt>
+            <dd>Show all or only unread entries of the current feed</dd>
+            <dt><kbd>g</kbd></dt>
+            <dd>Refresh the current feed</dd>
+            <dt><kbd>?</kbd>, <kbd>F1</kbd></dt>
+            <dd>Show key shortcuts</dd>
+          </dl>
+        </section>
+        <section class="entry">
+          <header><h1 class="title">Help shortcuts</h1></header>
+          <dl class="content">
+            <dt><kbd>Escape</kbd></dt>
+            <dd>Hide key shortcuts</dd>
+          </dl>
+        </section>
+      </article>
+      <form id="login" class="hidden dialog">
+        <label for="login-username">User name</label>
+        <input id="login-username">
+        <label for="login-password">Password</label>
+        <input id="login-password" type="password">
+        <label class="checkbox"><input id="login-remember" type="checkbox">
+          Remember me</label>
+        <div class="button">
+          <button type="button" onclick="logIn();">Log in</button>
+        </div>
+      </form>
+      <form id="feed-discover" class="hidden dialog">
+        <input id="discover-category_id" type="hidden">
+        <label for="discover-url">URL</label>
+        <div class="hbox">
+          <input id="discover-url" type="url">
+          <button id="discover-feeds" type="button" onclick="discoverFeeds()">Discover</button>
+        </div>
+        <select id="discover-results" size="10">
+        </select>
+        <details>
+          <summary>Advanced</summary>
+          <label for="addfeed-username">User name</label>
+          <input id="addfeed-username">
+          <label for="addfeed-password">Password</label>
+          <input id="addfeed-password" type="password">
+          <label for="addfeed-user_agent">Override <code>User-Agent</code></label>
+          <input id="addfeed-user_agent">
+          <label class="checkbox"><input id="addfeed-crawler" type="checkbox">
+            Fetch original content</label>
+        </details>
+        <div class="button">
+          <button type="button" onclick="closeModal()">Cancel</button>
+          <button type="button" id="discover-subscribe" onclick="addFeed()">Subscribe</button>
+        </div>
+      </form>
+      <form id="feed-properties" class="hidden dialog">
+        <input id="feed-id" type="hidden">
+        <label for="feed-title">Title</label>
+        <input id="feed-title">
+        <label for="feed-site_url">Site URL</label>
+        <input id="feed-site_url" type="url">
+        <label for="feed-feed_url">Feed URL</label>
+        <input id="feed-feed_url" type="url">
+        <details><summary><label>Advanced</label></summary>
+          <label for="feed-username">Feed user name</label>
+          <input id="feed-username">
+          <label for="feed-password">Feed password</label>
+          <input id="feed-password" type="password">
+          <label for="feed-user_agent">Override <code>User-Agent</code></label>
+          <input id="feed-user_agent">
+        </details>
+        <label class="checkbox"><input id="feed-crawler" type="checkbox">
+          Fetch original content</label>
+        <label for="feed-scraper_rules">Scraper rules</label>
+        <textarea id="feed-scraper_rules"></textarea>
+        <label for="feed-rewrite_rules">Rewrite rules</label>
+        <select id="feed-rewrite_rules" multiple size="4">
+          <option value="add_image_title">add_image_title</option>
+          <option value="add_dynamic_image">add_dynamic_image</option>
+          <option value="add_youtube_video">add_youtube_video</option>
+          <option value="add_pdf_download_link">add_pdf_download_link</option>
+        </select>
+        <div class="button">
+          <button type="button" onclick="closeModal()">Cancel</button>
+          <button type="button" onclick="saveFeed()">Save</button>
+        </div>
+      </form>
+    </div>
+
+    <script>
+      /***********************
+       * Debugging, DOM and Fetch helpers
+       */
+
+      var error = console.log;
+      var debug = console.log;
+
+      var authorization = localStorage.getItem('authorization');
+
+      /**
+       * Fetch a resource, check the response status code, and parse its json if applicable.
+       * @param {string} uri
+       * @param {Object} init
+       * @return {Promise} that resolves to the JSON value or null when done,
+       *                   or rejects with the response object on unsuccessful status.
+       */
+      function myFetch(uri, init) {
+        if (authorization) {
+          init.headers = init.headers || {};
+          init.headers.Authorization = `Basic ${authorization}`;
+        }
+        return fetch(uri, {
+          ...init,
+          credentials: 'omit',
+        }).then(response => {
+          if (!response.ok) throw response;
+          if (response.status === 204) {
+            return null;
+          }
+          if (/^application\/json($|;)/i.test(response.headers.get('Content-Type'))) {
+            return response.json();
+          }
+        });
+      }
+      /**
+       * GET a resource.
+       * @param {string} uri
+       * @return {Promise} that resolves to the JSON value or null when done.
+       */
+      function GET(uri) {
+        return myFetch(uri, {});
+      }
+      /**
+       * PUT a JSON body to a resource.
+       * @param {string} uri
+       * @param {Object} json
+       * @returm {Promise} that resolves to the response JSON value or null when done.
+       */
+      function PUT(uri, json) {
+        return myFetch(uri, {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(json),
+        });
+      }
+      /**
+       * POST a JSON body to a resource.
+       * @param {string} uri
+       * @param {Object} json
+       * @returm {Promise} that resolves to the response JSON value or null when done.
+       */
+      function POST(uri, json) {
+        return myFetch(uri, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(json),
+        });
+      }
+      /**
+       * DELETE a resource.
+       * @param {string} uri
+       * @return {Promise} that resolves to the JSON value or null when done.
+       */
+      function DELETE(uri) {
+        return myFetch(uri, {
+          method: 'DELETE'
+        });
+      }
+
+      /**
+       * Return the nearest ancestor of `node` having class `cls`.
+       * Return null if not found.
+       * @param {Node} node
+       * @param {string} cls
+       * @return {?Node}
+       */
+      function ancestorWithClass(node, cls) {
+        while (node && !node.classList.contains(cls)) {
+          node = node.parentElement;
+        }
+        return node;
+      }
+
+      function feedAncestor(node) {
+        return ancestorWithClass(node, 'feed');
+      }
+      function categoryAncestor(node) {
+        return ancestorWithClass(node, 'category');
+      }
+
+      /**
+       * @callback cloneCallback
+       * @param {Node} clone the cloned template content
+       * @return {Promise}
+       */
+      /**
+       * Clone a template specified by a DOM node ID,
+       * initialize it using the provided function,
+       * and insert it into a specified parent node.
+       *
+       * @param {string} id
+       * @param {Node} parent
+       * @param {cloneCallback} process
+       * @return {Promise} whatever `process` returns
+       */
+      function clone(id, parent, process) {
+        var template = document.getElementById(id);
+        var clone = document.importNode(template.content, true);
+        var promise = process(clone);
+        parent.appendChild(clone);
+        return promise;
+      }
+
+      /**
+       * Return true if a node is in the subtree rooted at an element.
+       * @param {Node} node
+       * @param {Element} root
+       * @return {boolean}
+       */
+      function inSubtree(node, root) {
+        while (node && node !== root) {
+          node = node.parentNode;
+        }
+        return node;
+      }
+
+      /****************
+       * Domain helpers
+       */
+
+      /**
+       * @readonly
+       * @enum {string}
+       */
+      var Status = {
+        /** @member {string}
+         * Display all entries. */
+        all: 'all',
+        /** @member {string}
+         * Display unread entries only. */
+        unread: 'unread'
+      };
+      /**
+       * @typedef {{feed: ?number, status: Status}} Filter
+       * @typedef {Object} Category
+       * @typedef {Object} Feed
+       * @typedef {Object} Entry
+       */
+
+      /**
+       * Currently active filter.
+       * @type {Filter}
+       */
+      var filter = parseFilter(document.location.hash);
+
+      /**
+       * Parse the application state from the URL hash.
+       * If the hash is unrecognized, return the default filter.
+       * @param {string} hash
+       * @return {Filter}
+       */
+      function parseFilter(hash) {
+        var matches = hash.match(/^#\/(feed\/([0-9]+)\/)?(unread\/)?/);
+        if (!matches) {
+          return {feed: null, status: 'unread'};
+        }
+        return {feed: matches[1] ? parseInt(matches[2]) : null,
+                status: matches[3] ? 'unread' : 'all' };
+      }
+
+      /**
+       * Format the application state into an URL hash.
+       * @param {?number} feed
+       * @param {Status} status
+       * @return {string}
+       */
+      function formatFilter(feed, status) {
+        return '#/' + (feed !== null ? `feed/${feed}/` : '') +
+          (status === 'unread' ? 'unread/' : '');
+      }
+
+      /**
+       * Modify the link’s target URL to match the current filter’s status.
+       * If the link would represent the current filter, make it inactive.
+       * @param {HTMLAnchorElement} a
+       * @return {undefined}
+       */
+      function updateHref(a) {
+        var feedString = feedAncestor(a).dataset.id;
+        var feed = feedString === "" ? null : parseInt(feedString);
+        if (feed === filter.feed) {
+          a.removeAttribute('href');
+          a.tabIndex = 0;
+        } else {
+          a.href = formatFilter(feed, filter.status);
+          a.removeAttribute('tabindex');
+        }
+      }
+      function updateHrefs() {
+        document.querySelectorAll('.feed a').forEach(updateHref);
+      }
+
+      /**
+       * The entries container.
+       * @type {HTMLElement}
+       */
+      var entriesNode = document.getElementById('entries');
+
+      /**
+       * @typedef {{unread: number,
+       *            read: number,
+       *            removed: number}} StatusCount
+       * @typedef {Object.<number, StatusCount>} StatusCounts
+       * Maps category and feed IDs to counts of unread, read, and removed entries in each feed.
+       */
+      /**
+       * Update unread counts on all feeds in the tree.
+       * @param {{all: StatusCount,
+       *          categories: StatusCounts,
+       *          feeds: StatusCounts}} counts
+       * @return {undefined}
+       */
+      function showUnreadCounts({all, categories, feeds}) {
+        allFeedsNode.querySelector('.unread').textContent = all.unread;
+        categoriesNode.querySelectorAll('.category').forEach(categoryNode => {
+          categoryNode.querySelector('.unread').textContent =
+            (categories[categoryNode.dataset.id] || {}).unread || '';
+        })
+        categoriesNode.querySelectorAll('.feeds .feed').forEach(feedNode => {
+          feedNode.querySelector('.unread').textContent =
+            (feeds[feedNode.dataset.id] || {}).unread || '';
+        })
+      }
+
+      /**
+       * Increment the unread counts on the given category tree nodes.
+       * @param {[HTMLElement, number][]} nodes_deltas
+       * @return {undefined}
+       */
+      function adjustUnreadCounts(nodes_deltas) {
+        nodes_deltas.forEach(([node, delta]) => {
+          var unreadNode = node.querySelector('.unread');
+          unreadNode.textContent = ((parseInt(unreadNode.textContent) || 0) + delta) || '';
+        })
+      }
+
+      /**
+       * Clone the entry template and initialize it with an entry object from the API response.
+       * @param {Object} entry
+       * @return {{category: number, feed: number, status: string}}
+       * The entry feed icon is fetched asynchronously.
+       */
+      function createEntryNode(entry) {
+        return clone('entry', entriesNode, node => {
+          var entryNode = node.querySelector('.entry');
+          entryNode.dataset.id = entry.id;
+          entryNode.dataset.feed = entry.feed.id;
+          entryNode.dataset.category = entry.feed.category.id;
+          entryNode.classList.add(entry.status);
+
+          node.querySelector('.title').href = entry.url;
+          node.querySelector('.title').textContent = entry.title;
+          node.querySelector('.published_at').textContent = entry.published_at;
+          node.querySelector('.feed').textContent = entry.feed.title;
+          node.querySelector('.content').innerHTML = entry.content;
+
+          var iconNode = node.querySelector('.icon');
+          GET(`/v1/feeds/${entry.feed.id}/icon`).then(icon => {
+            iconNode.src = `data:${icon.data}`;
+          }).catch(e => {
+            if (e.status != 404) { error(e); }
+          });
+
+          return {category: entry.feed.category.id,
+                  feed: entry.feed.id,
+                  status: entry.status};
+        });
+      }
+
+      /**
+       * Calculate counts of unread, read, and removed entries
+       * in each feed, category, and total.
+       * @param {{category: number, feed: number, status: string}[]} feedStatuses
+       * @param {{all: StatusCount,
+       *          categories: StatusCounts,
+       *          feeds: StatusCounts}}
+       */
+      function countStatuses(feedStatuses) {
+        return feedStatuses.reduce(
+          ({all, categories, feeds}, {category, feed, status}) => {
+            all[status] = (all[status] || 0) + 1;
+            categories[category] = categories[category] || {};
+            categories[category][status] = (categories[category][status] || 0) + 1;
+            feeds[feed] = feeds[feed] || {};
+            feeds[feed][status] = (feeds[feed][status] || 0) + 1;
+            return {all, categories, feeds};
+          }, {all: {}, categories: {}, feeds: {}})
+      }
+
+      /**
+       * Replace currently displayed entries with those satisfying a filter.
+       * Calculate status counts for all feeds and categories.
+       * @param {Filter} filter
+       * @return {Promise<{all: StatusCount,
+       *                   categories: StatusCounts,
+       *                   feeds: StatusCounts}>}
+       *         that resolves when the entries have been loaded.
+       */
+      function showEntries(filter) {
+        var statusFilter = filter.status === 'unread' ? 'status=unread&' : '';
+        var feedFilter = filter.feed !== null ? `feeds/${filter.feed}/` : '';
+        return GET(`/v1/${feedFilter}entries?${statusFilter}`).then(entries => {
+          entriesNode.querySelectorAll('*').forEach(entryNode => entryNode.remove());
+          entriesNode.scrollTop = 0;
+          entriesNode.classList.toggle('empty', !entries.length);
+          return Promise.all(entries.entries.map(createEntryNode)).then(countStatuses);
+        });
+      }
+
+      /**
+       * Handle click events on filter controls.
+       * Update the currently active `filter`.
+       * Maintain link URLs on the feed nodes
+       * so that they link to the current filter’s unread status.
+       * Display the entries corresponding to the new filter.
+       * @param {Event} e
+       * @return {undefined}
+       */
+      function filterUpdated(e) {
+        // This is called after a click on a feed node
+        // or on a status radio button.
+        // Detect which it was.
+        var feedNode = feedAncestor(e.target);
+        if (feedNode) {
+          filter.feed = feedNode.dataset.id === '' ? null : parseInt(feedNode.dataset.id);
+          // As a UX optimization, we handle the change without page reload.
+          e.preventDefault();
+          e.stopPropagation();
+        } else {
+          filter.status = document.getElementById('filter-all').checked ? 'all' : 'unread';
+        }
+        updateHrefs();
+
+        history.pushState(null, '', formatFilter(filter.feed, filter.status));
+        showEntries(filter).then(showUnreadCounts).catch(error);
+      }
+
+      /**
+       * Handle history navigation.
+       * Update the currently active `filter`.
+       * Maintain link URLs on the feed nodes.
+       * Display the entries corresponding to the recalled filter.
+       * @param {Event} e
+       * @return {undefined}
+       */
+      function historyPopped(e) {
+        filter = parseFilter(document.location.hash);
+        updateHrefs();
+        showEntries(filter).then(showUnreadCounts).catch(error);
+      }
+
+      /**
+       * Fetch the current user profile
+       * and put its relevant parts in the DOM.
+       * @return Promise<undefined> that resolves when done.
+       */
+      function displayUsername() {
+        return GET('/v1/me').then(me => {
+          document.getElementById('username').textContent = me.username;
+          document.documentElement.dataset.theme = me.theme;
+        });
+      }
+
+      /**
+       * Category/feed tree root.
+       * @type {HTMLElement}
+       */
+      var categoriesNode = document.getElementById('categories');
+      /**
+       * Map category IDs to their representing DOM subtrees,
+       * rooted at the `.category` element.
+       * @type {Object.<number, HTMLElement>}
+       */
+      var categoryNodes = {};
+
+      /**
+       * Create a DOM subtree for a category.
+       * @param {Category} category
+       * @return {Promise<undefined>} that resolves when done.
+       */
+      function createCategoryNode(category) {
+        return clone('category', categoriesNode, node => {
+          var categoryNode = node.querySelector('.category');
+          categoryNode.dataset.id = category.id;
+          categoryNode.addEventListener('dragover', categoryDragOver);
+          categoryNode.addEventListener('drop', categoryDrop);
+          node.querySelector('.title').textContent = category.title;
+          categoryNodes[category.id] = categoryNode;
+        });
+      }
+
+      /**
+       * Map feed IDs to their representing DOM subtrees,
+       * rooted at the `.feed` element.
+       * @type {Object.<number, HTMLElement>}
+       */
+      var feedNodes = {};
+
+      /**
+       * Fetch and display the feed icon.
+       * @param {number} feed
+       * @param {HTMLImageElement} iconNode
+       * @return {Promise<undefined>} that resolves when done.
+       */
+      function fetchFeedIcon(feed, iconNode) {
+        return GET(`/v1/feeds/${feed}/icon`).then(icon => {
+          iconNode.src = `data:${icon.data}`;
+        });
+      }
+
+      /**
+       * Create a DOM subtree for a feed.
+       * Assumes the category node has been created.
+       * @param {Feed} feed
+       * @return {Promise<undefined>} that resolves when done.
+       * The feed icon is fetched asynchronously.
+       */
+      function createFeedNode(feed) {
+        return clone('feed', categoryNodes[feed.category.id].querySelector('.feeds'), node => {
+          if (feed.id === filter.feed) {
+            categoryNodes[feed.category.id].querySelector('details').open = true;
+          }
+
+          var feedNode = feedNodes[feed.id] = node.querySelector('.feed');
+          feedNode.dataset.id = feed.id;
+
+          var feedLinkNode = node.querySelector('a');
+          updateHref(feedLinkNode);
+          feedLinkNode.addEventListener('click', filterUpdated);
+          feedLinkNode.addEventListener('dragstart', feedDragStart);
+
+          node.querySelector('.title').textContent = feed.title;
+
+          fetchFeedIcon(feed.id, feedNode.querySelector('.icon')).catch(e => {
+            if (e.status != 404) { throw e; }
+          });
+        });
+      }
+
+      /**
+       * Fetch and display the category and feed tree.
+       * @return Promise{null[]} that resolves when the DOM has been updated.
+       *         Feed icons are fetched in the background.
+       */
+      function showCategoriesFeeds() {
+        return Promise.all([GET('/v1/categories'), GET('/v1/feeds')]).then(
+          ([categories, feeds]) =>
+            Promise.all(categories.map(createCategoryNode)).then(
+              Promise.all(feeds.map(createFeedNode))));
+      }
+
+      /**
+       * Context menus – framework
+       */
+
+      /**
+       * Feed context menu.
+       * @type {HTMLMenuElement}
+       */
+      var feedMenuNode = document.querySelector('#feedMenu');
+
+      /**
+       * Return optimal placement of an interval of given `size`
+       * within the available `space`, with initial click at `start`.
+       * This function solves the 1D problem; call independently for both coördinates.
+       * @param {number} start
+       * @param {number} size
+       * @param {number} space
+       */
+      function placeMenu(start, size, space) {
+        if (start + size < space) return start;     // natural alignment   | +Foobar| |
+        if (start - size >= 0) return start - size;  // opposite alignment  | |Foobar+ |
+        if (size < space) return space - size;      // flush end           |   |F+obar|
+        return 0;                             // flush start and clip end  |Fo+b|
+      }
+
+      /**
+       * Handle the contextmenu event within the categories/feeds tree.
+       * Find the applicable context menu and the target DOM subtree, if any.
+       * Mark the root of the subtree with `menu-target` class.
+       * Display the menu at a suitable position based on the click location.
+       * Focus the first menu item.
+       * @param {MouseEvent} e
+       * @return {undefined}
+       */
+      function categoriesContextMenu(e) {
+        // e.target: The clicked element
+        // e.currentTarget === categoriesNode
+
+        var [menuNode, menuTarget] = (
+          Array.from(document.querySelectorAll('menu[data-for]'))
+            .map(menu => [menu, ancestorWithClass(e.target, menu.dataset['for'])])
+            .find(([menu, target]) => target) || [null, null]);
+        if (!menuNode) {
+          return;
+        }
+        menuTarget.classList.add('menu-target');
+
+        // e.screenX, e.screenY: relative to the screen
+        //
+        // e.pageX, e.pageY: relative to the page
+        // === (because we don’t have window-level scroll)
+        // e.clientX, e.clientY: relative to the viewport
+        //
+        // e.offsetX, e.offsetY: relative to e.target
+        //
+
+        menuNode.classList.remove('hidden');
+        var menuBounds = menuNode.getBoundingClientRect();
+        var x = placeMenu(e.clientX, menuBounds.width, document.body.clientWidth);
+        var y = placeMenu(e.clientY, menuBounds.height, document.body.clientHeight);
+        menuNode.style.left = `${x}px`;
+        menuNode.style.top = `${y}px`;
+
+        menuNode.querySelector('button').focus();
+
+        e.preventDefault();
+        e.stopPropagation();
+      }
+
+      /**
+       * Return the currently visible context menu.
+       * @return {HTMLMenuElement}
+       */
+      function activeMenu() {
+        return document.querySelector('menu:not(.hidden)');
+      }
+
+      /**
+       * Hide any context menus.
+       * Remove the `menu-target` style.
+       * @param {Event} e
+       * @return {undefined}
+       */
+      function hideContextMenu(e) {
+        document.querySelectorAll('menu:not(.hidden)').forEach(menu => {
+          menu.classList.add('hidden');
+        })
+        document.querySelectorAll('.menu-target').forEach(target => {
+          target.classList.remove('menu-target')
+        });
+      }
+
+      /**
+       * Handle a mouseover event on a context menu.
+       * Focus the menu item under cursor.
+       * @param {MouseEvent} e
+       * @return {undefined}
+       */
+      function menuMouseOver(e) {
+        e.target.focus();
+      }
+
+      /**
+       * Focus the menu item adjacent to the one currently focused.
+       * @param {number} delta 1 for next, -1 for previous
+       * @return {undefined}
+       */
+      function focusAdjacentMenuItem(delta) {
+        var commands = Array.from(document.querySelectorAll('menu:not(.hidden) button'));
+        var current = document.activeElement;
+        commands[(commands.indexOf(current) + delta + commands.length) % commands.length].focus();
+      }
+      function focusNextMenuItem(e) {
+        focusAdjacentMenuItem(1);
+      }
+      function focusPreviousMenuItem(e) {
+        focusAdjacentMenuItem(-1);
+      }
+
+      /**
+       * Context menus – All
+       */
+
+      /**
+       * Handle the Create Category menu item.
+       * @return {undefined}
+       */
+      function createCategory() {
+        var newTitle = prompt('Create category');
+        if (!newTitle) {
+          return;
+        }
+        POST('/v1/categories', {
+          title: newTitle
+        }).then(createCategoryNode).catch(error);
+      }
+
+      /**
+       * Mark all unread entries read.
+       * @return {undefined}
+       */
+      function markAllRead() {
+        markReadBySelector('.unread.entry');
+      }
+
+      /**
+       * Context menus – category
+       */
+
+      /**
+       * Mark all unread entries in the target category read.
+       * @return {undefined}
+       */
+      function markCategoryRead() {
+        var categoryNode = document.querySelector('.menu-target');
+        markReadBySelector(`.unread.entry[data-category="${categoryNode.dataset.id}"]`);
+      }
+
+      /**
+       * Handle the Rename menu item.
+       * @return {undefined}
+       */
+      function renameCategory() {
+        var categoryNode = document.querySelector('.menu-target');
+        var titleNode = categoryNode.querySelector('.title');
+        var title = titleNode.textContent;
+        var newTitle = prompt(`Rename ${title} to`, title);
+        if (!newTitle) {
+          return;
+        }
+        var id = parseInt(categoryNode.dataset.id);
+        PUT(`/v1/categories/${id}`, {
+          title: newTitle
+        }).then(updated => {
+          titleNode.textContent = newTitle;
+        }).catch(error);
+      }
+
+      /**
+       * Handle the Delete menu item.
+       * @return {undefined}
+       */
+      function deleteCategory() {
+        var categoryNode = document.querySelector('.menu-target');
+        var title = categoryNode.querySelector('.title').textContent;
+        var feeds = categoryNode.querySelectorAll('.feed');
+        var confirmation = feeds.length === 0 ? null :
+            feeds.length === 1 ? feeds[0].querySelector('.title').textContent :
+            `${feeds.length} feeds`;
+        if (confirmation && !confirm(`Delete category ${title}?
+
+This will unsubscribe you from ${confirmation}.`)) {
+          return;
+        }
+        DELETE(`/v1/categories/${parseInt(categoryNode.dataset.id)}`).then(() => {
+          categoryNode.remove();
+        }).catch(error);
+      }
+
+      /**
+       * Context menus – feed
+       */
+
+      /**
+       * Mark all unread entries in the target feed read.
+       * @return {undefined}
+       */
+      function markFeedRead() {
+        var feedNode = document.querySelector('.menu-target');
+        markReadBySelector(`.unread.entry[data-feed="${feedNode.dataset.id}"]`);
+      }
+
+      /**
+       * Handle the Refresh menu item.
+       * @return {undefined}
+       */
+      function refreshFeed() {
+        var feedNode = document.querySelector('.menu-target');
+        PUT(`/v1/feeds/${feedNode.dataset.id}/refresh`, {}).then(refreshEntries).catch(error)
+      }
+
+      /**
+       * Handle the Unsubscribe menu item.
+       * @return {undefined}
+       */
+      function unsubscribeFeed() {
+        var target = document.querySelector('.menu-target');
+        var title = target.querySelector('.title').textContent;
+        if (!confirm(`Unsubscribe from ${title}?`)) {
+          closeModal();
+          return;
+        }
+        var id = parseInt(target.dataset.id);
+        DELETE(`/v1/feeds/${id}`).then(() => {
+          feedNodes[id].remove();
+          closeModal();
+        }).catch(error);
+      }
+
+      /**
+       * Drag and drop
+       *
+       * Protocol: The data transfer object carries the ID of the feed being dragged
+       * in the `application/miniflux-feed` data item, as a decimal integer.
+       */
+
+      /**
+       * Handle a drag start event on a feed.
+       * Put the feed ID on the data transfer object.
+       * @param {DragEvent} e
+       * @return {undefined}
+       */
+      function feedDragStart(e) {
+        var feedNode = feedAncestor(e.target);
+        e.dataTransfer.setData('application/miniflux-feed', feedNode.dataset.id);
+      }
+
+      /**
+       * Handle a drag over event on a category.
+       * Accept feeds dragged from other categories,
+       * and ordinary URLs dragged from everywhere.
+       * @param {DragEvent} e
+       * @return {undefined}
+       */
+      function categoryDragOver(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        var dt = e.dataTransfer;
+        dt.dropEffect = (dt.types.indexOf('application/miniflux-feed') !== -1 ? 'move'
+                         : dt.types.indexOf('text/uri-list') !== -1 ? 'link'
+                         : 'none');
+      }
+
+      /**
+       * Handle a drop event on a category.
+       * If a feed is dragged, move it into this category.
+       * If an URL is dragged, discover feeds from it and offer to subscribe.
+       * @param {DragEvent} e
+       * @return {undefined}
+       */
+      function categoryDrop(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        var category = categoryAncestor(e.target);
+        var dt = e.dataTransfer;
+        var feed = parseInt(dt.getData('application/miniflux-feed') || -1);
+        var url = dt.getData('text/uri-list');
+        if (feed !== -1) {
+          PUT(`/v1/feeds/${feed}`, {
+            category_id: parseInt(category.dataset.id),
+          }).then(() => {
+            var feedNode = feedNodes[feed];
+            var unread = parseInt(feedNode.querySelector('.unread').textContent) || 0;
+            var originalCategory = categoryAncestor(feedNode);
+            category.querySelector('.feeds').appendChild(feedNodes[feed]);
+            adjustUnreadCounts([[originalCategory, -unread], [category, unread]]);
+          }).catch(error);
+          return;
+        } else if (url) {
+          category.classList.add('menu-target');
+          openDiscoveryForm();
+          document.getElementById('discover-url').value = url;
+          discoverFeeds();
+          return;
+        }
+      }
+
+      /**
+       * Dialogs
+       */
+
+      /**
+       * The modal overlay node.
+       * @type {HTMLElement}
+       */
+      var overlayNode = document.getElementById('overlay');
+
+      /**
+       * The help box node.
+       * @type {HTMLElement}
+       */
+      var helpNode = document.getElementById('help');
+
+      /**
+       * Show the help popup.
+       * @return {undefined}
+       */
+      function showHelp() {
+        if (inSubtree(document.activeElement, entriesNode)) {
+          entriesFocus = document.activeElement;
+        }
+        if (inSubtree(document.activeElement, categoriesNode)) {
+          indexFocus = document.activeElement;
+        }
+        overlayNode.classList.remove('hidden');
+        helpNode.classList.remove('hidden');
+        helpNode.focus();
+      }
+
+      /**
+       * Close the modal dialog.
+       * @return {undefined}
+       */
+      function closeModal() {
+        helpNode.classList.add('hidden');
+        loginDialog.classList.add('hidden');
+        feedPropertiesNode.classList.add('hidden');
+        overlayNode.classList.add('hidden');
+        entriesFocus.focus();
+      }
+
+      /**
+       * The login dialog.
+       * @type {HTMLElement}
+       */
+      var loginDialog = document.getElementById('login');
+
+      /**
+       * Open the login dialog.
+       * @return {undefined}
+       */
+      function showLoginDialog() {
+        overlayNode.classList.remove('hidden');
+        loginDialog.classList.remove('hidden');
+        loginDialog.querySelector('input:not([type=hidden])').select();
+        loginDialog.querySelector('input:not([type=hidden])').focus();
+      }
+
+      /**
+       * Log in and reload feeds.
+       * @param {Event} e
+       * @return {undefined}
+       */
+      function logIn(e) {
+        var username = document.getElementById('login-username').value;
+        var password = document.getElementById('login-password').value;
+        var credentials = `${username}:${password}`;
+        authorization = btoa(unescape(encodeURIComponent(credentials)));
+        if (document.getElementById('login-remember').checked) {
+          localStorage.setItem('authorization', authorization);
+        }
+        start().then(closeModal).catch(error);
+      }
+
+      /**
+       * Log out and drop all user data.
+       * @return {undefined}
+       */
+      function logOut() {
+        authorization = null;
+        localStorage.removeItem('authorization');
+        document.getElementById('username').textContent = '';
+        document.querySelectorAll('.entry, .category').forEach(node => node.remove());
+        document.getElementById('login-password').value = '';
+        showLoginDialog();
+      }
+
+      /**
+       * The feed properties dialog.
+       * @type {HTMLElement}
+       */
+      var feedPropertiesNode = document.getElementById('feed-properties');
+
+      /**
+       * Open the feed properties dialog.
+       * @param {Event} e
+       * @return {undefined}
+       */
+      function editFeed(e) {
+        var target = categoriesNode.querySelector('.menu-target');
+        if (!target) {
+          return;
+        }
+        GET(`/v1/feeds/${parseInt(target.dataset.id)}`).then(feed => {
+          document.getElementById('feed-id').value = feed.id;
+          document.getElementById('feed-title').value = feed.title;
+          document.getElementById('feed-site_url').value = feed.site_url;
+          document.getElementById('feed-feed_url').value = feed.feed_url;
+          var rewriteRules = new Set(feed.rewrite_rules.split(',').map(s => s.trim()));
+          document.querySelectorAll('#feed-rewrite_rules option').forEach(option => {
+            option.selected = rewriteRules.has(option.value);
+          })
+          document.getElementById('feed-scraper_rules').value = feed.scraper_rules;
+          document.getElementById('feed-crawler').checked = feed.crawler;
+
+          overlayNode.classList.remove('hidden');
+          feedPropertiesNode.classList.remove('hidden');
+          feedPropertiesNode.querySelector('input:not([type=hidden])').select();
+          feedPropertiesNode.querySelector('input:not([type=hidden])').focus();
+        }).catch(error);
+      }
+
+      /**
+       * Save the feed currently edited
+       * @param {Event} e
+       * @return {undefined}
+       */
+      function saveFeed(e) {
+        var rewriteRules = (
+          Array.from(document.querySelectorAll('#feed-rewrite_rules option'))
+            .filter(option => option.selected)
+            .map(option => option.value).join(','));
+        var id = parseInt(document.getElementById('feed-id').value);
+        PUT(`/v1/feeds/${id}`, {
+          'feed_url': document.getElementById('feed-feed_url').value,
+          'site_url': document.getElementById('feed-site_url').value,
+          'title': document.getElementById('feed-title').value,
+          'scraper_rules': document.getElementById('feed-scraper_rules').value,
+          'rewrite_rules': rewriteRules,
+          'crawler': document.getElementById('feed-crawler').checked,
+          'username': document.getElementById('feed-username').value,
+          'password': document.getElementById('feed-password').value,
+          'user_agent': document.getElementById('feed-user_agent').value,
+        }).then(updatedFeed => {
+          feedNodes[updatedFeed.id].querySelector('.title').textContent = updatedFeed.title;
+          closeModal();
+        }).catch(error);
+      }
+
+      /**
+       * The feed discovery dialog.
+       * @type {HTMLElement}
+       */
+      var feedDiscoverNode = document.getElementById('feed-discover');
+
+      /**
+       * Open the feed discovery dialog.
+       * @param {Event} e
+       * @return {undefined}
+       */
+      function openDiscoveryForm(e) {
+        var target = categoriesNode.querySelector('.menu-target');
+        if (!target) {
+          return;
+        }
+        document.getElementById('discover-category_id').value = parseInt(target.dataset.id);
+        document.querySelectorAll('discover-results option').forEach(option => { option.remove; });
+        document.getElementById('discover-subscribe').disabled = true;
+
+        overlayNode.classList.remove('hidden');
+        feedDiscoverNode.classList.remove('hidden');
+        feedDiscoverNode.querySelector('input:not([type=hidden])').select();
+        feedDiscoverNode.querySelector('input:not([type=hidden])').focus();
+      }
+
+      /**
+       * Handle click on the feed discovery button.
+       * @param {Event} e
+       * @return {undefined}
+       */
+      function discoverFeeds(e) {
+        POST('/v1/discover', {
+          url: document.getElementById('discover-url').value
+        }).then(discoveredFeeds => {
+          var discoveredResultsNode = document.getElementById('discover-results');
+          discoveredResultsNode.querySelectorAll('option').forEach(option => { option.remove(); });
+          discoveredFeeds.forEach((feed, i) => {
+            clone('discovered-feed', discoveredResultsNode, node => {
+              var option = node.querySelector('option');
+              option.value = feed.url;
+              option.selected = i === 0;
+              node.querySelector('.title').textContent = feed.title;
+              node.querySelector('.type').textContent = feed.type;
+            });
+          });
+          if (discoveredFeeds.length) {
+            document.getElementById('discover-results').focus();
+          }
+          document.getElementById('discover-subscribe').disabled = !discoveredFeeds.length;
+        }).catch(error);
+      }
+
+      /**
+       * Handle click on the subscription button.
+       * @param {Event} e
+       * @return {undefined}
+       */
+      function addFeed(e) {
+        POST('/v1/feeds', {
+          feed_url: document.getElementById('discover-results').value,
+          category_id: parseInt(document.getElementById('discover-category_id').value),
+          username: document.getElementById('addfeed-username').value,
+          password: document.getElementById('addfeed-password').value,
+          user_agent: document.getElementById('addfeed-user_agent').value,
+          crawler: document.getElementById('addfeed-crawler').checked,
+        }).then(created => {
+          return GET(`/v1/feeds/${created.feed_id}`);
+        }).then(createFeedNode).then(closeModal).catch(error);
+      }
+
+      /**
+       * Key shortcuts
+       */
+
+      /**
+       * Return the entry that straddles the top edge of the entriesNode viewport,
+       * or the last one that is above the top edge,
+       * or null.
+       *
+       *       ┏━━━━┓         ┗━━━━┛
+       *   ----┃    ┃---- -------------- ------------
+       *       ┗━━━━┛         ┌────┐         ┌────┐
+       *
+       * @return {?HTMLArticleElement}
+       */
+      function currentEntry() {
+        var edge = entriesNode.scrollTop;
+        var entries = Array.from(entriesNode.querySelectorAll('.entry'));
+        var endsAfter = entries.find(entry => entry.offsetTop + entry.offsetHeight > edge);
+        return !endsAfter ? entriesNode.lastElementChild :  // all are above edge
+          endsAfter.offsetTop < edge + 2 ? endsAfter :      // straddles
+          endsAfter.previousElementSibling;                 // completely below
+      }
+
+      /**
+       * Return the immediately following entry, or null.
+       * Return the first entry if argument is null.
+       * @param {?HTMLArticleElement} entry
+       * @return {?HTMLArticleElement}
+       */
+      function nextEntry(entry) {
+        return entry ? entry.nextElementSibling : entriesNode.firstElementChild;
+      }
+      /**
+       * Return the immediately preceding entry, or null.
+       * @param {?HTMLArticleElement} entry
+       * @return {?HTMLArticleElement}
+       */
+      function previousEntry(entry) {
+        return entry ? entry.previousElementSibling : null;
+      }
+
+      /**
+       * The number of pixels of the previous page
+       * that shall be visible on the next page after scrolling.
+       * @type {number}
+       */
+      const scrollOverlap = 40;
+
+      /**
+       * @callback DirectionEntry
+       * Return the entry immediately following a reference entry in the scroll direction.
+       * @param {?HTMLArticleElement} entry
+       * @return {?HTMLArticleElement}
+       */
+      /**
+       * Scroll in the direction defined by the arguments.
+       * @param {DirectionEntry} directionEntry
+       * @param {number} scrollEnd the end of scroll range in the scroll direction.
+       * @param {number} sign 1 for forward, -1 for backward.
+       * @return {undefined}
+       */
+      function scrollToward(directionEntry, scrollEnd, sign) {
+        var current = currentEntry();
+        var currentHeaderHeight = current ? current.querySelector('header').offsetHeight : 0;
+        var next = directionEntry(current);
+        var target = next ? next.offsetTop : scrollEnd;
+        var pageHeight = entriesNode.scrollHeight - entriesNode.scrollTopMax;
+        // If target is within pageHeight, scroll there directly.
+        // Otherwise, scroll by scrollAmount.
+        var scrollAmount = pageHeight - currentHeaderHeight - scrollOverlap;
+        var distance = sign * (target - entries.scrollTop);
+        var limit = entriesNode.scrollTop + sign * scrollAmount;
+        var newTop = distance < pageHeight ? target : limit;
+        entriesNode.scrollTo({top: newTop, behavior: 'smooth'});
+      }
+      function scrollForward() {
+        scrollToward(nextEntry, entriesNode.scrollTopMax, 1, Math.min);
+      }
+      function scrollBackward() {
+        scrollToward(previousEntry, 0, -1, Math.max);
+      }
+
+      /**
+       * When focus is in the entries list,
+       * holds the last focused node in the category/feed tree.
+       * @type {HTMLElement}
+       */
+      var indexFocus = null;
+      /**
+       * When focus is in the category/feed tree,
+       * holds the last focused node in the entries list.
+       * @type {HTMLElement}
+       */
+      var entriesFocus = entriesNode;
+
+      /**
+       * Focus the category/feed tree.
+       * @return {undefined}
+       */
+      function focusIndex() {
+        if (inSubtree(document.activeElement, entriesNode)) {
+          entriesFocus = document.activeElement;
+        }
+        if (inSubtree(document.activeElement, categoriesNode)) {
+          indexFocus = document.activeElement;
+        }
+        if (!indexFocus) {
+          indexFocus = filter.feed === null ? allFeedsNode.querySelector('a') : feedNodes[filter.feed];
+        }
+        indexFocus.focus();
+      }
+
+      /**
+       * Focus the entries list.
+       * @return {undefined}
+       */
+      function focusEntries() {
+        if (inSubtree(document.activeElement, categoriesNode)) {
+          indexFocus = document.activeElement;
+        }
+        entriesFocus.focus();
+      }
+
+      /**
+       * Focus the next or previous visible node in the category/feed tree.
+       * @param {number} delta 1 for forward motion, -1 for backward motion
+       * @return {undefined}
+       */
+      function focusNextPrevious(delta) {
+        var tabStops = Array.from(categoriesNode.querySelectorAll(
+          '.all-feeds a, summary, details[open] a'));
+        var current = document.activeElement;
+        var currentIndex = tabStops.indexOf(current);
+        if (currentIndex !== -1 &&
+            currentIndex + delta >= 0 &&
+            currentIndex + delta < tabStops.length) {
+          tabStops[currentIndex + delta].focus();
+        }
+      }
+      function focusNext() {
+        focusNextPrevious(1)
+      }
+      function focusPrevious() {
+        focusNextPrevious(-1)
+      }
+
+      /**
+       * @callback order
+       * Order the tab stops in the reverse order of scrolling.
+       * @param {Array.<HTMLElement>} tabStops
+       * @return {Array.<HTMLElement>}
+       *
+       * @callback scrollerEdge
+       * Return the coordinate of the page edge in the direction of scrolling.
+       * @param {HTMLElement} scroller
+       * @return {number}
+       *
+       * @callback frontEdge
+       * Return the coordinate of a node edge in the direction of scrolling.
+       * @param {HTMLElement} node
+       * @return {number}
+       *
+       * @callback backEdge
+       * Return the coordinate of a node edge in the reverse direction of scrolling.
+       * @param {HTMLElement} node
+       * @return {number}
+       *
+       * @scrollAdjust
+       * Return the distance between scroller top and scroller edge in the direction of scrolling.
+       * @param {HTMLElement} scroller
+       * @return {number}
+       *
+       * Focus the first/last node visible on the current page in the category/feed tree,
+       * or the one a page further.
+       * @param {number} direction coordinate increment in the direction of scrolling.
+       * @return {null}
+       */
+      function focusPageUpDown(order, scrollerEdge, frontEdge, backEdge, direction, scrollAdjust) {
+        var tabStops = order(Array.from(categoriesNode.querySelectorAll(
+          '.all-feeds a, summary, details[open] a')));
+        var current = document.activeElement;
+        var scroller = ancestorWithClass(current, 'scroller');
+        var farEdge = scrollerEdge(scroller);
+        var lastVisible = tabStops.find(
+          node => 0 <= direction * (farEdge - frontEdge(node)));
+        if (current !== lastVisible) {
+          lastVisible.focus();
+        } else {
+          var lastNextPage = tabStops.find(
+            node => direction * (frontEdge(node) - backEdge(current)) <= scroller.offsetHeight);
+          scroller.scrollTo({top: frontEdge(lastNextPage) - scrollAdjust(scroller),
+                             behavior: 'smooth'});
+          lastNextPage.focus({preventScroll: true});
+        }
+      }
+      function focusPageDown() {
+        focusPageUpDown(array => array.reverse(), scroller => scroller.scrollTop + scroller.offsetHeight,
+                        node => node.offsetTop + node.offsetHeight, node => node.offsetTop,
+                        1, scroller => scroller.offsetHeight);
+      }
+      function focusPageUp() {
+        focusPageUpDown(array => array, scroller => scroller.scrollTop,
+                        node => node.offsetTop, node => node.offsetTop + node.offsetHeight,
+                        -1, scroller => 0);
+      }
+
+      /**
+       * If focus is on an open category, close it.
+       * If focus is on a feed, focus its category.
+       * @return {undefined}
+       */
+      function focusParentOrClose() {
+        var feedNode = feedAncestor(document.activeElement);
+        var categoryNode = categoryAncestor(document.activeElement);
+        if (feedNode && categoryNode) {
+          categoryNode.querySelector('summary').focus();
+        } else if (categoryNode) {
+          categoryNode.querySelector('details').open = false;
+        }
+      }
+
+      /**
+       * If focus is on a closed category, open it.
+       * If focus is on an open category, focus its first feed.
+       * @return {undefined}
+       */
+      function focusChildOrOpen() {
+        var current = document.activeElement;
+        var categoryNode = categoryAncestor(current);
+        if (!categoryNode) {
+          return;
+        }
+        var detailsNode = categoryNode.querySelector('details');
+        if (!detailsNode.open) {
+          detailsNode.open = true;
+        } else {
+          (categoryNode.querySelector('.feeds a') || current).focus();
+        }
+      }
+
+      /**
+       * Focus the first feed in the category/feed tree.
+       * @return {undefined}
+       */
+      function focusFirst() {
+        allFeedsNode.querySelector('a').focus();
+      }
+
+      /**
+       * Focus the last visible feed in the category/feed tree.
+       * @return {undefined}
+       */
+      function focusLast() {
+        var tabStops = Array.from(categoriesNode.querySelectorAll(
+          '.all-feeds a, summary, details[open] a')).reverse();
+        tabStops[0].focus();
+      }
+
+      /**
+       * Display the focused feed if any.
+       * @return {undefined}
+       */
+      function openCloseShowFeed() {
+        var feed = feedAncestor(document.activeElement);
+        if (feed) {
+          document.activeElement.click();
+        }
+      }
+
+      /**
+       * Show all entries of the selected feed.
+       * @return {undefined}
+       */
+      function showAllEntries() {
+        document.getElementById('filter-all').click();
+      }
+      /**
+       * Show only unread entries of the selected feed.
+       * @return {undefined}
+       */
+      function showUnreadEntries() {
+        document.getElementById('filter-unread').click();
+      }
+
+      /**
+       * @callback f
+       * Function to determine if a status change from `oldStatus` will affect the unread count.
+       * @param {str} oldStatus
+       * @return {str} 'unread' if it will.
+       *
+       * Return unread count adjustments for a change of all given entries.
+       * @param {number} sign the direction of adjustment.
+       * @return {Array.<[HTMLElement, number]>}
+       */
+      function countAdjustments1(entryStatuses, f, sign) {
+        debug(entryStatuses, sign);
+        var statuses = entryStatuses.map(([entry, oldStatus]) => ({
+          category: entry.dataset.category,
+          feed: entry.dataset.feed,
+          status: f(oldStatus)
+        }));
+        debug(statuses);
+        var {all, categories, feeds} = countStatuses(statuses);
+        debug(all, categories, feeds);
+        return [[allFeedsNode, sign * all.unread || 0]].concat(
+          Object.entries(categories).map(([id, counts]) => [categoryNodes[id], sign * counts.unread || 0])
+        ).concat(
+          Object.entries(feeds).map(([id, counts]) => [feedNodes[id], sign * counts.unread || 0])
+        );
+      }
+      /**
+       * Return unread count adjustments for a change of all given entries to newStatus.
+       * Assumes every entry’s status changes, 
+       * i.e. entryStatuses must be filtered from entries that stay unchanged.
+       * @param {[HTMLArticleElement, Status]} entryStatuses
+       * @param {Status} newStatus
+       * @return {{all: StatusCount,
+       *           categories: StatusCounts,
+       *           feeds: StatusCounts}}
+       */
+      function countAdjustments(entryStatuses, newStatus) {
+        debug(entryStatuses, newStatus);
+        if (newStatus === 'unread') {
+          return countAdjustments1(entryStatuses, oldStatus => 'unread', 1);
+        } else {
+          return countAdjustments1(entryStatuses, oldStatus => oldStatus, -1);
+        }
+      }
+      /**
+       * Set each entry’s status to read, unread, or removed.
+       * @param {string} status
+       * @param {HTMLArticleElement[]} entry
+       * @return {undefined}
+       */
+      function setStatus(status, entries) {
+        var entryStatuses = entries.map(
+          entry => [entry,
+                   ['unread', 'read', 'removed'].find(s => entry && entry.classList.contains(s))]
+        ).filter(([entry, oldStatus]) => entry && oldStatus !== status);
+        // Order is significant!
+        // This function is called from the scroll handler and so may be called
+        // multiple times for the same entry and status.
+        // Therefore it must be idempotent
+        // so that unread counts are not decremented multiple times.
+        // Removing the status class ensures that repeat invocations do nothing.
+        entryStatuses.forEach(([entry, oldStatus]) => {
+          entry.classList.remove(oldStatus);
+        });
+        PUT('/v1/entries', {
+          'entry_ids': entryStatuses.map(([entry, oldStatus]) => parseInt(entry.dataset.id)),
+          'status': status
+        }).then(() => {
+          entryStatuses.forEach(([entry, oldStatus]) => {
+            entry.classList.add(status);
+          });
+          var adjustments = countAdjustments(entryStatuses, status);
+          adjustUnreadCounts(adjustments);
+        }).catch(error);
+      }
+      function markReadBySelector(selector) {
+        var unread = Array.from(entriesNode.querySelectorAll(selector));
+        var confirmation = unread.length === 0 ? null :
+            unread.length === 1 ? `“${unread[0].querySelector('.title').textContent}”` :
+            `${unread.length} entries`;
+        if (confirmation && !confirm(`Mark ${confirmation} entries read?`)) {
+          return;
+        }
+        setStatus('read', unread);
+      }
+      function markRead() {
+        var current = currentEntry();
+        if (current) {
+          setStatus('read', [current]);
+          current.classList.remove('keep-unread');
+        }
+      }
+      function markUnread() {
+        var current = currentEntry();
+        if (current) {
+          setStatus('unread', [current]);
+          current.classList.add('keep-unread');
+        }
+      }
+      function markRemoved() {
+        var current = currentEntry();
+        if (current) {
+          setStatus('removed', [current]);
+          current.classList.remove('keep-unread');
+        }
+      }
+
+      /**
+       * Refresh the entry list using the current filter.
+       * @return {undefined}
+       */
+      function refreshEntries() {
+        showEntries(filter).then(showUnreadCounts).catch(error);
+      }
+
+      /**
+       * Open the current entry on the original site.
+       * @return {undefined}
+       */
+      function openOriginal() {
+        var current = currentEntry();
+        if (!current) return;
+        current.querySelector('.title').click();
+      }
+
+      /**
+       * @callback {Action}
+       * Represents a function that can be bound to a key.
+       * @return {undefined}
+       */
+      /**
+       * Maps roots of DOM subtrees to keymaps that take effect in these subtrees.
+       * Each keymap maps keys to functions.
+       * Keys are looked up from the most specific to most general keymap;
+       * the first keymap that defines a key wins.
+       * @type {Map.<HTMLElement, Object.<string, Action>>}
+       */
+      var keymaps = new Map([
+        [entriesNode, {
+          'n': scrollForward,
+          'Space': scrollForward,
+          'PageDown': scrollForward,
+          'p': scrollBackward,
+          'Shift+Space': scrollBackward,
+          'PageUp': scrollBackward,
+          'm': markRead,
+          'M': markUnread,
+          'x': markRemoved,
+          'o': openOriginal,
+        }],
+        [categoriesNode, {
+          'n': focusNext,
+          'ArrowDown': focusNext,
+          'p': focusPrevious,
+          'ArrowUp': focusPrevious,
+          'ArrowLeft': focusParentOrClose,
+          'ArrowRight': focusChildOrOpen,
+          'PageUp': focusPageUp,
+          'PageDown': focusPageDown,
+          'Home': focusFirst,
+          'End': focusLast,
+          'Space': openCloseShowFeed,
+          'Escape': focusEntries,
+        }],
+        [overlayNode, {
+          'Escape': closeModal,
+        }],
+        [document.getElementById('feed-discover'), {
+          'Enter': addFeed,
+        }],
+        [document.getElementById('discover-feeds'), {
+          'Enter': discoverFeeds,
+        }],
+        [document.getElementById('discover-url'), {
+          'Enter': discoverFeeds,
+        }],
+        [document.getElementById('menus'), {
+          'ArrowDown': focusNextMenuItem,
+          'ArrowUp': focusPreviousMenuItem,
+          'Escape': hideContextMenu,
+        }],
+        [document.body, {
+          'i': focusIndex,
+          'I': focusEntries,
+          'A': showAllEntries,
+          'U': showUnreadEntries,
+          'g': refreshEntries,
+          'F1': showHelp,
+          '?': showHelp,
+        }],
+      ]);
+
+      /**
+       * Maps key names as produced by the browser to names used in keymaps.
+       * Any key names not mentioned here are used as is.
+       * @type {Object.<string, string>}
+       */
+      var translationMap = {
+        ' ': 'Space',
+      };
+
+      /**
+       * Translate a browser key name to the name used in keymaps.
+       * @param {string} key
+       * @return {string}
+       */
+      function translateKey(key) {
+        return translationMap[key] || key;
+      }
+
+      /**
+       * Handle a keypress event.
+       * @param {KeyboardEvent} e
+       */
+      function keyPressed(e) {
+        if (e.ctrlKey || e.altKey || e.metaKey ||
+            e.target instanceof HTMLInputElement ||
+            e.target instanceof HTMLTextAreaElement) {
+          return;
+        }
+        // For some bindings, we are only interested in the character generated.
+        // For others, whether Shift was pressed.
+        var key = translateKey(e.key);
+        var shiftedKey = `${e.shiftKey ? 'Shift+' : ''}${key}`;
+        // Traverse from e.target up the DOM
+        // looking for a keymap that binds this key.
+        var target = e.target;
+        var action = null;
+        for (; target && !action; target = target.parentNode) {
+          var keymap = keymaps.get(target);
+          action = keymap && (keymap[shiftedKey] || keymap[key] || null);
+        }
+        if (action) {
+          action();
+          e.preventDefault();
+          e.stopPropagation();
+        }
+      }
+
+      /**
+       * Scrolling
+       *
+       * Since scroll events can arrive with a very high frequency,
+       * we throttle them with a timer.
+       * Specifically, on a scroll event, we set a 50ms timer.
+       * While the timer is running, we ignore scroll events.
+       */
+      // Approach not taken: Debounce
+      //
+      // On a scroll event, set a timer. If already running, reset it.
+      // When the timer fires, the scrolling has stopped; invoke any necessary command.
+      //
+      // Why this is a bad idea: If the user steadily scrolls through all entries,
+      // she expects them marked read when they scroll away,
+      // but we would only mark the last one before scrolling stops.
+
+      /**
+       * ID of the currently running timer, if any.
+       * @type {number}
+       */
+      var entriesScrollTimer = null;
+      /**
+       * The entry that was current (see currentEntry)
+       * at the time of the last non-ignored scroll event.
+       * @type {HTMLArticleElement}
+       */
+      var entriesScrollLastEntry = null;
+      /**
+       * Handle a scroll event on the entries list.
+       * If the last known current entry has scrolled off the screen
+       * and has not been explicitly marked unread, mark it read.
+       * @param {UIEvent} e
+       * @return {undefined}
+       */
+      function entriesScrolled(e) {
+        if (entriesScrollTimer !== null) {
+          return;
+        }
+        entriesScrollTimer = setTimeout(() => {
+          entriesScrollTimer = null;
+        }, 50);
+
+        if (entriesScrollLastEntry &&
+            entriesScrollLastEntry.offsetTop + entriesScrollLastEntry.offsetHeight
+            < entriesNode.scrollTop) {
+          if (!entriesScrollLastEntry.classList.contains('keep-unread')) {
+            setStatus('read', [entriesScrollLastEntry]);
+          }
+        }
+
+        entriesScrollLastEntry = currentEntry();
+      }
+
+      /**
+       * Startup code
+       */
+
+      function start() {
+        return displayUsername().then(() => Promise.all([
+          showCategoriesFeeds(),
+          showEntries(filter),
+        ]).then(
+          ([_, unreadCounts]) => showUnreadCounts(unreadCounts)
+        ));
+      }
+
+      // User profile or Log in
+      start().catch(e => {
+        if (e.status === 401) {
+          showLoginDialog();
+        } else {
+          error(e);
+        }
+      });
+
+      // Set up status radio buttons
+      document.getElementById(`filter-${filter.status}`).checked = true;
+      ['all', 'unread'].forEach(status => {
+        document.getElementById(`filter-${status}`).addEventListener('click', filterUpdated);
+      })
+
+      // Set up the All Feeds node
+      var allFeedsNode = document.querySelector('.all-feeds');
+      {
+        let allFeedsLink = allFeedsNode.querySelector('a');
+        updateHref(allFeedsLink, filter);
+        allFeedsLink.addEventListener('click', filterUpdated);
+      }
+      // Set up the history navigation handler
+      window.addEventListener('popstate', historyPopped);
+
+      // Enable keyboard scrolling of the entries container
+      entriesNode.focus();
+      // Set up key shortcuts
+      document.body.addEventListener('keypress', keyPressed);
+
+      // Mark entry read when scrolled off the screen
+      entriesNode.addEventListener('scroll', entriesScrolled);
+
+      // Set up context menus
+      document.getElementById('categories').addEventListener('contextmenu', categoriesContextMenu);
+      window.addEventListener('click', hideContextMenu);
+      document.getElementById('menus').addEventListener('mouseover', menuMouseOver);
+    </script>
+  </body>
+</html>
