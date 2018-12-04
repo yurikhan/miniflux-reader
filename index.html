@@ -47,6 +47,11 @@
       html, body, #bottom-area { overflow: hidden }
       #sidebar, #entries { overflow: auto }
 
+      /* Wide mode */
+      #bottom-area { width: 100%; transition: width 0.5s ease, transform 0.5s ease }
+      .wide#bottom-area { width: 125%; transform: translateX(-20%) }
+      .wide#bottom-area.focus-index { transform: translateX(0) }
+
       /* Topbar */
       #topbar { padding: 0.5em; box-shadow: 0px 1px 1px 1px rgba(0,0,0, 0.25) }
       .radio:first-child label { border-top-left-radius: 2px; border-bottom-left-radius: 2px }
@@ -317,6 +322,8 @@
         <section class="entry">
           <header><h1 class="title">Global shortcuts</h1></header>
           <dl class="content">
+            <dt><kbd>[</kbd></dt>
+            <dd>Hide or show the feeds tree</dd>
             <dt><kbd>i</kbd></dt>
             <dd>Focus the feeds tree</dd>
             <dt><kbd>I</kbd></dt>
@@ -1493,6 +1500,11 @@ This will unsubscribe you from ${confirmation}.`)) {
       }
 
       /**
+       * Bottom area element.
+       * @type {HTMLElement}
+       */
+      var bottomArea = document.getElementById('bottom-area');
+      /**
        * When focus is in the entries list,
        * holds the last focused node in the category/feed tree.
        * @type {HTMLElement}
@@ -1520,6 +1532,7 @@ This will unsubscribe you from ${confirmation}.`)) {
           indexFocus = filter.feed === null ? allFeedsNode.querySelector('a') : feedNodes[filter.feed];
         }
         indexFocus.focus();
+        bottomArea.classList.add('focus-index');
       }
 
       /**
@@ -1531,6 +1544,15 @@ This will unsubscribe you from ${confirmation}.`)) {
           indexFocus = document.activeElement;
         }
         entriesFocus.focus();
+        bottomArea.classList.remove('focus-index');
+      }
+
+      /**
+       * Hide/show index.
+       * @return {undefined}
+       */
+      function toggleWide() {
+        bottomArea.classList.toggle('wide');
       }
 
       /**
@@ -1876,6 +1898,7 @@ This will unsubscribe you from ${confirmation}.`)) {
           'Escape': hideContextMenu,
         }],
         [document.body, {
+          '[': toggleWide,
           'i': focusIndex,
           'I': focusEntries,
           'A': showAllEntries,
