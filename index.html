@@ -1230,9 +1230,9 @@ This will unsubscribe you from ${confirmation}.`)) {
        * @return {undefined}
        */
       function closeModal() {
-        helpNode.classList.add('hidden');
-        loginDialog.classList.add('hidden');
-        feedPropertiesNode.classList.add('hidden');
+        overlayNode.querySelectorAll('.dialog').forEach(d => {
+          d.classList.add('hidden');
+        });
         overlayNode.classList.add('hidden');
         entriesFocus.focus();
       }
