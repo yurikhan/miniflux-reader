@@ -1793,10 +1793,10 @@ This will unsubscribe you from ${confirmation}.`)) {
       }
       function markReadBySelector(selector) {
         var unread = Array.from(entriesNode.querySelectorAll(selector));
-        var confirmation = unread.length === 0 ? null :
+        var target = unread.length === 0 ? null :
             unread.length === 1 ? `“${unread[0].querySelector('.title').textContent}”` :
             `${unread.length} entries`;
-        if (confirmation && !confirm(`Mark ${confirmation} entries read?`)) {
+        if (target && !confirm(`Mark ${target} read?`)) {
           return;
         }
         setStatus('read', unread);
