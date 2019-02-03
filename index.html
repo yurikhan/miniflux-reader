@@ -1931,7 +1931,7 @@ This will unsubscribe you from ${confirmation}.`)) {
        * Handle a keypress event.
        * @param {KeyboardEvent} e
        */
-      function keyPressed(e) {
+      function keyDown(e) {
         if (e.ctrlKey || e.altKey || e.metaKey ||
             e.target instanceof HTMLInputElement ||
             e.target instanceof HTMLTextAreaElement) {
@@ -2051,7 +2051,7 @@ This will unsubscribe you from ${confirmation}.`)) {
       // Enable keyboard scrolling of the entries container
       entriesNode.focus();
       // Set up key shortcuts
-      document.body.addEventListener('keypress', keyPressed);
+      document.body.addEventListener('keydown', keyDown);
 
       // Mark entry read when scrolled off the screen
       entriesNode.addEventListener('scroll', entriesScrolled);
