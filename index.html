@@ -18,7 +18,9 @@
           --table-border: #ccc; --th-background: #f8f8f8;
           --link-color: -moz-hyperlinktext; --visited-link-color: -moz-visitedhyperlinktext;
       }
-      :root[data-theme="black"] {
+      :root[data-theme="black"],
+      :root[data-theme="dark_serif"],
+      :root[data-theme="dark_sans_serif"] {
           --background: #282828; --foreground: #888;
           --ui-background: #555753;
           --highlight-background: #3465a4; --highlight-foreground: #ccc;
@@ -787,6 +789,14 @@
       }
 
       /**
+       * Detect the user’s preferred theme.
+       * @return {string}
+       */
+      function detectTheme() {
+        return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      }
+
+      /**
        * Fetch the current user profile
        * and put its relevant parts in the DOM.
        * @return Promise<undefined> that resolves when done.
@@ -794,7 +804,10 @@
       function displayUsername() {
         return GET('/v1/me').then(me => {
           document.getElementById('username').textContent = me.username;
-          document.documentElement.dataset.theme = me.theme;
+          document.documentElement.dataset.theme = (
+            me.theme === 'system_serif' ? `${detectTheme()}_serif` :
+            me.theme === 'system_sans_serif' ? `${detectTheme()}_sans_serif` :
+            me.theme);
         });
       }
 
