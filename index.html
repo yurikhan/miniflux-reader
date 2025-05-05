@@ -16,7 +16,8 @@
           --key-background: #eee; --key-foreground: black; --key-border: #aaa; --key-shadow: #aaa;
           --menu-background: Menu; --menu-foreground: MenuText;
           --table-border: #ccc; --th-background: #f8f8f8;
-          --link-color: -moz-hyperlinktext; --visited-link-color: -moz-visitedhyperlinktext;
+          --link-color: var(--user-link-color, -moz-hyperlinktext);
+          --visited-link-color: var(--user-visited-color, -moz-visitedhyperlinktext);
       }
       :root[data-theme="black"],
       :root[data-theme="dark_serif"],
